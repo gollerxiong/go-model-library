@@ -1,4 +1,4 @@
-module github.com/gollerxiong/mlib
+module github.com/gollerxiong/mbox
 
 go 1.23.1
 
