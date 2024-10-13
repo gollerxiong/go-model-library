@@ -2,10 +2,9 @@ package main
 
 import (
 	"flag"
+	"github.com/gollerxiong/mbox/cmd/tbox"
 	"log"
 	"strings"
-
-	"model_library/cmd/tbox"
 )
 
 var (
