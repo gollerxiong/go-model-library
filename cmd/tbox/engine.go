@@ -192,11 +192,9 @@ func (t *engine) Run(table ...string) error {
 			fmt.Println(str)
 		}
 
-		if !checkPathExist(t.libPath) {
-			dir_path := filepath.Join(t.libPath, tab)
-			fmt.Println(dir_path)
-			//os.Mkdir(dir_path, os.ModePerm)
-
+		dir_path := filepath.Join(t.libPath, tab)
+		fmt.Println(dir_path)
+		if !checkPathExist(dir_path) {
 			err = os.MkdirAll(dir_path, 0755)
 			if err != nil {
 				log.Fatalln("create pkg dir error: ", err)
@@ -352,7 +350,10 @@ func (t *engine) createItemFile(tab string, record []columnEntry) {
 
 	fmt.Println(file_path)
 
-	os.WriteFile(file_path, []byte(str.String()), 0666)
+	err := os.WriteFile(file_path, []byte(str.String()), 0666)
+	if err != nil {
+		fmt.Println("write file error: ", err.Error())
+	}
 }
 
 func (t *engine) createItemStruct(tab string, b *strings.Builder) *strings.Builder {
