@@ -20,6 +20,8 @@ type engine struct {
 	pkgPath     string // gen code to dir path
 	isOutputCmd bool   // whether to output to cmd,otherwise output to file
 	libPath     string // point the library path relate root path
+	projectName string
+	conn        string
 
 	addTag bool
 	tagKey string // the key value of the tag field, the default is `db:xxx`
@@ -39,7 +41,7 @@ type engine struct {
 }
 
 // New create an entry for engine
-func New(dsn string, opts ...Option) *engine {
+func New(dsn, projectName, conn string, opts ...Option) *engine {
 	if dsn == "" {
 		log.Fatalln("dsn is empty")
 	}
@@ -51,6 +53,8 @@ func New(dsn string, opts ...Option) *engine {
 		tagKey:      "db",
 		addTag:      true,
 		libPath:     "./app/library",
+		projectName: projectName,
+		conn:        conn,
 	}
 
 	for _, o := range opts {
@@ -96,10 +100,13 @@ func (t *engine) getTableCode(tab string, record []columnEntry) []string {
 	tabInfoBuf.WriteString(fmt.Sprintf("const %s = \"%s\"\n\n", tabName, tab))
 	tabInfoBuf.WriteString(fmt.Sprintf("// %s for %s table entity struct.\n", structName, tab))
 	tabInfoBuf.WriteString(fmt.Sprintf("type %s struct {\n", structName))
+
+	importBuf.WriteString("import (\n\t\"gorm.io/gorm\"\n")
+	importBuf.WriteString(fmt.Sprintf("\t\"%s/global\"\n", t.projectName))
 	for _, val := range record {
 		dataType := getType(val.DataType) // column type
-		if dataType == "time.Time" && importBuf.Len() == 0 {
-			importBuf.WriteString("import (\n\t\"time\"\n)\n\n")
+		if dataType == "time.Time" && !strings.Contains(importBuf.String(), "time") {
+			importBuf.WriteString("\t\"time\"\n")
 		}
 
 		if t.noNullField && strInSet(dataType, noNullList) {
@@ -146,14 +153,26 @@ func (t *engine) getTableCode(tab string, record []columnEntry) []string {
 		tabInfoBuf.WriteString("\n")
 	}
 
+	importBuf.WriteString(")\n\n")
+	tabInfoBuf.WriteString("}\n\n")
+
+	tabInfoBuf.WriteString(fmt.Sprintf("\n// %s for %s", "TableName", tab))
+	tabInfoBuf.WriteString(fmt.Sprintf("\nfunc (o *%s) TableName() string {\n", structName))
+	tabInfoBuf.WriteString(fmt.Sprintf("\treturn %s\n", tabName))
 	tabInfoBuf.WriteString("}\n")
 
-	if t.enableTableNameFunc {
-		tabInfoBuf.WriteString(fmt.Sprintf("\n// %s for %s", "TableName", tab))
-		tabInfoBuf.WriteString(fmt.Sprintf("\nfunc (%s) TableName() string {\n", structName))
-		tabInfoBuf.WriteString(fmt.Sprintf("\treturn %s\n", tabName))
-		tabInfoBuf.WriteString("}\n")
-	}
+	tabInfoBuf.WriteString(fmt.Sprintf("\nfunc (o *%s) GetConn() string {\n", structName))
+	tabInfoBuf.WriteString(fmt.Sprintf("\treturn \"%s\"\n", t.conn))
+	tabInfoBuf.WriteString("}\n")
+
+	tabInfoBuf.WriteString(fmt.Sprintf("\nfunc (o *%s) GetTable() string {\n", structName))
+	tabInfoBuf.WriteString(fmt.Sprintf("\treturn %s\n", tabName))
+	tabInfoBuf.WriteString("}\n")
+
+	tabInfoBuf.WriteString(fmt.Sprintf("\nfunc (o *%s) GetModel() (model *gorm.DB) {\n", structName))
+	tabInfoBuf.WriteString(fmt.Sprintf("\tmodel = global.App.DbMap[o.GetConn()]\n"))
+	tabInfoBuf.WriteString("\treturn\n")
+	tabInfoBuf.WriteString("}\n")
 
 	return []string{
 		header.String(), importBuf.String(), tabInfoBuf.String(),
@@ -324,8 +343,8 @@ func (t *engine) createItemFile(tab string, record []columnEntry) {
 	str.WriteString(fmt.Sprintf("package %s\n\n", tab))
 	str.WriteString(fmt.Sprintf("import (\n"))
 	str.WriteString(fmt.Sprintf("\t\"gorm.io/gorm\"\n"))
-	str.WriteString(fmt.Sprintf("\t\"huabao/app/models\"\n"))
-	str.WriteString(fmt.Sprintf("\t\"huabao/utils\"\n"))
+	str.WriteString(fmt.Sprintf("\t\"%s/app/models\"\n", t.projectName))
+	str.WriteString(fmt.Sprintf("\t\"%s/utils\"\n", t.projectName))
 	str.WriteString(fmt.Sprintf("\t\"strings\"\n"))
 	str.WriteString(fmt.Sprintf(")\n\n\n\n"))
 
@@ -339,9 +358,9 @@ func (t *engine) createItemFile(tab string, record []columnEntry) {
 func (t *engine) createItemStruct(tab string, b *strings.Builder) *strings.Builder {
 	b.WriteString(fmt.Sprintf("type %s struct {\n", t.camelCase(tab)))
 	b.WriteString(fmt.Sprintf("\tisNew\tbool\n"))
-	b.WriteString(fmt.Sprintf("\tmodel\t*models.%s\n", t.camelCase(tab)))
+	b.WriteString(fmt.Sprintf("\tmodel\t*models.%s\n", t.camelCase(tab)+"Entity"))
 	b.WriteString(fmt.Sprintf("\tfield\tstring\n"))
-	b.WriteString(fmt.Sprintf("\tformatter\t*%sFormatter\n", t.camelCase(tab)))
+	b.WriteString(fmt.Sprintf("\tformatter\t*ModelFormatter\n"))
 	b.WriteString(fmt.Sprintf("\tattributes\tmap[string]interface{}\n"))
 	b.WriteString(fmt.Sprintf("\toldAttributes\tmap[string]interface{}\n"))
 	b.WriteString(fmt.Sprintf("}\n\n\n"))
@@ -369,7 +388,7 @@ func (t *engine) createItemIsNew(tab string, b *strings.Builder) *strings.Builde
 }
 
 func (t *engine) createItemGetModel(tab string, b *strings.Builder) *strings.Builder {
-	b.WriteString(fmt.Sprintf("func (o *%s) GetModel() *models.%s {\n", t.camelCase(tab), t.camelCase(tab)))
+	b.WriteString(fmt.Sprintf("func (o *%s) GetModel() *models.%s {\n", t.camelCase(tab), t.camelCase(tab)+"Entity"))
 	b.WriteString(fmt.Sprintf("\treturn o.model\n"))
 	b.WriteString(fmt.Sprintf("}\n\n\n"))
 	t.createItemSetFields(tab, b)
@@ -443,7 +462,7 @@ func (t *engine) createItemSave(tab string, b *strings.Builder) *strings.Builder
 	b.WriteString(fmt.Sprintf("\t} else {\n"))
 	b.WriteString(fmt.Sprintf("\t\tdiffMap := utils.DiffMapBaseFirst(o.oldAttributes, o.attributes)\n"))
 	b.WriteString(fmt.Sprintf("\t\tkeys := utils.MapKeys(diffMap)\n"))
-	b.WriteString(fmt.Sprintf("\t\tconn.Model(&models.%s{}).Where(\"id = ?\", o.model.Id).Select(keys).Updates(diffMap)\n", t.camelCase(tab)))
+	b.WriteString(fmt.Sprintf("\t\tconn.Model(&models.%s{}).Where(\"id = ?\", o.model.ID).Select(keys).Updates(diffMap)\n", t.camelCase(tab)+"Entity"))
 	b.WriteString(fmt.Sprintf("\t}\n"))
 	b.WriteString(fmt.Sprintf("\to.SetNew(false)\n"))
 	b.WriteString(fmt.Sprintf("\treturn o\n"))
@@ -464,7 +483,6 @@ func (t *engine) createItemDelete(tab string, b *strings.Builder) *strings.Build
 	b.WriteString(fmt.Sprintf("\t\t}\n"))
 	b.WriteString(fmt.Sprintf("\t}\n"))
 	b.WriteString(fmt.Sprintf("\treturn true\n"))
-	b.WriteString(fmt.Sprintf("\t}\n"))
 	b.WriteString(fmt.Sprintf("}\n\n\n"))
 	t.createItemLoadById(tab, b)
 	return b
@@ -493,9 +511,9 @@ func (t *engine) createCommonFile(tab string, record []columnEntry) {
 	file_path := filepath.Join(t.libPath, tab, file_name)
 
 	str.WriteString(fmt.Sprintf("package %s\n\nimport (\n", tab))
-	str.WriteString(fmt.Sprintf("\t\"gorm.io/form\"\n"))
-	str.WriteString(fmt.Sprintf("\t\"huabao/app/models\"\n"))
-	str.WriteString(fmt.Sprintf("\t\"huabao/global\"\n"))
+	str.WriteString(fmt.Sprintf("\t\"gorm.io/gorm\"\n"))
+	str.WriteString(fmt.Sprintf("\t\"%s/app/models\"\n", t.projectName))
+	str.WriteString(fmt.Sprintf("\t\"%s/global\"\n", t.projectName))
 	str.WriteString(fmt.Sprintf("\t\"strings\"\n"))
 	str.WriteString(fmt.Sprintf(")\n\n"))
 	str.WriteString(fmt.Sprintf("var field string = \"*\"\n"))
@@ -510,11 +528,11 @@ func (t *engine) createCommonFile(tab string, record []columnEntry) {
 func (t *engine) createGetConnStr(tab string, b *strings.Builder) *strings.Builder {
 	b.WriteString(fmt.Sprintf("func GetConn() *gorm.DB {\n"))
 	b.WriteString(fmt.Sprintf("\tif conn == nil {\n"))
-	b.WriteString(fmt.Sprintf("\t\tdbmodel := &models.%s\n", t.camelCase(tab)))
+	b.WriteString(fmt.Sprintf("\t\tdbmodel := &models.%s{}\n", t.camelCase(tab)+"Entity"))
 	b.WriteString(fmt.Sprintf("\t\ttable = dbmodel.GetTable()\n"))
 	b.WriteString(fmt.Sprintf("\t\tconnstr := dbmodel.GetConn()\n\n"))
 	b.WriteString(fmt.Sprintf("\t\ttmp, ok := global.App.DbMap[connstr]\n\n"))
-	b.WriteString(fmt.Sprintf("\t\tif != ok {\n"))
+	b.WriteString(fmt.Sprintf("\t\tif ok {\n"))
 	b.WriteString(fmt.Sprintf("\t\t\tconn = tmp\n"))
 	b.WriteString(fmt.Sprintf("\t\t}\n"))
 	b.WriteString(fmt.Sprintf("\t}\n"))
@@ -560,7 +578,7 @@ func (t *engine) createItemFormaterFile(tab string, record []columnEntry) {
 	str.WriteString(fmt.Sprintf("func (u *ModelFormatter) SetData(data map[string]interface{}) {\n"))
 	str.WriteString(fmt.Sprintf("\tu.data = data\n"))
 	str.WriteString(fmt.Sprintf("}\n"))
-	str.WriteString(fmt.Sprintf("func (u *ModelFormatter) Formate() map[string]intermace{} {\n"))
+	str.WriteString(fmt.Sprintf("func (u *ModelFormatter) Formate() map[string]interface{} {\n"))
 	str.WriteString(fmt.Sprintf("\tvar result = make(map[string]interface{})\n"))
 	str.WriteString(fmt.Sprintf("\tfor key, val := range u.data {\n"))
 	str.WriteString(fmt.Sprintf("\t\ttmp := columnFormate(key, val)\n"))
@@ -578,9 +596,8 @@ func (t *engine) createItemListFile(tab string, record []columnEntry) {
 	file_path := filepath.Join(t.libPath, tab, file_name)
 
 	str.WriteString(fmt.Sprintf("package %s\n\nimport (\n", tab))
-	str.WriteString(fmt.Sprintf("\t\"gorm.io/form\"\n"))
-	str.WriteString(fmt.Sprintf("\t\"huabao/app/models\"\n"))
-	str.WriteString(fmt.Sprintf("\t\"huabao/global\"\n"))
+	str.WriteString(fmt.Sprintf("\t\"gorm.io/gorm\"\n"))
+	str.WriteString(fmt.Sprintf("\t\"%s/app/models\"\n", t.projectName))
 	str.WriteString(fmt.Sprintf("\t\"strings\"\n"))
 	str.WriteString(fmt.Sprintf(")\n\n"))
 	str.WriteString(fmt.Sprintf("type ObjectList struct {\n"))
@@ -593,7 +610,7 @@ func (t *engine) createItemListFile(tab string, record []columnEntry) {
 	str.WriteString(fmt.Sprintf("\tids\t[]int\n"))
 	str.WriteString(fmt.Sprintf("\tlist\t[]interface{}\n"))
 	str.WriteString(fmt.Sprintf("\ttotal\tint64\n"))
-	str.WriteString(fmt.Sprintf("\tobjectListFormatter\tobjectListFormatter\n"))
+	str.WriteString(fmt.Sprintf("\tobjectListFormatter\t*objectListFormatter\n"))
 	str.WriteString(fmt.Sprintf("}\n\n"))
 	t.createItemListSetFieldStr(tab, &str)
 	os.WriteFile(file_path, []byte(str.String()), 0666)
@@ -655,7 +672,7 @@ func (t *engine) createItemListSetIds(tab string, b *strings.Builder) *strings.B
 
 func (t *engine) createItemListgetFormatter(tab string, b *strings.Builder) *strings.Builder {
 	b.WriteString(fmt.Sprintf("func (u *ObjectList) getFormatter() *objectListFormatter {\n"))
-	b.WriteString(fmt.Sprintf("\treturn u.objectListFOrmatter\n"))
+	b.WriteString(fmt.Sprintf("\treturn u.objectListFormatter\n"))
 	b.WriteString(fmt.Sprintf("}\n\n"))
 	t.createItemListaddField(tab, b)
 	return b
@@ -690,14 +707,14 @@ func (t *engine) createItemListbuildParams(tab string, b *strings.Builder) *stri
 func (t *engine) createItemListFind(tab string, b *strings.Builder) *strings.Builder {
 	b.WriteString(fmt.Sprintf("func (u *ObjectList) Find() (userInfoList []map[string]interface{}, total int64) {\n"))
 	b.WriteString(fmt.Sprintf("\tu.buildParams()\n\n"))
-	b.WriteString(fmt.Sprintf("\tlist := []models.%s{}\n", t.camelCase(tab)))
+	b.WriteString(fmt.Sprintf("\tlist := []models.%s{}\n", t.camelCase(tab)+"Entity"))
 	b.WriteString(fmt.Sprintf("\tresult := u.model.Find(&list)\n"))
 	b.WriteString(fmt.Sprintf("\tformatter := u.getFormatter()\n"))
 	b.WriteString(fmt.Sprintf("\tformatter.setList(list)\n"))
 	b.WriteString(fmt.Sprintf("\tformatter.setFields(u.field)\n"))
 	b.WriteString(fmt.Sprintf("\tuserInfoList = formatter.formate()\n"))
 	b.WriteString(fmt.Sprintf("\tu.total = result.RowsAffected\n"))
-	b.WriteString(fmt.Sprintf("\ttatal = u.total\n"))
+	b.WriteString(fmt.Sprintf("\ttotal = u.total\n"))
 	b.WriteString(fmt.Sprintf("\treturn\n"))
 	b.WriteString(fmt.Sprintf("}\n\n"))
 	t.createItemListfilter(tab, b)
@@ -705,7 +722,7 @@ func (t *engine) createItemListFind(tab string, b *strings.Builder) *strings.Bui
 }
 
 func (t *engine) createItemListfilter(tab string, b *strings.Builder) *strings.Builder {
-	b.WriteString(fmt.Sprintf("func (u *ObjectList) filter(list []models.%s) (result []map[string]interface{}) {\n", t.camelCase(tab)))
+	b.WriteString(fmt.Sprintf("func (u *ObjectList) filter(list []models.%s) (result []map[string]interface{}) {\n", t.camelCase(tab)+"Entity"))
 	b.WriteString(fmt.Sprintf("\tfor _, v := range list {\n"))
 	b.WriteString(fmt.Sprintf("\t\ttmp, _ := utils.StructToMap(v)\n"))
 	b.WriteString(fmt.Sprintf("\t\ttmp = utils.PickFieldsFromMap(tmp, u.field)\n"))
@@ -726,6 +743,9 @@ func (t *engine) createItemListObjectList(tab string, b *strings.Builder) *strin
 	b.WriteString(fmt.Sprintf("\t\tpageSize:\t20,\n"))
 	b.WriteString(fmt.Sprintf("\t\tmodel:\tGetConn().Table(table),\n"))
 	b.WriteString(fmt.Sprintf("\t\torder:\t[]string{\"id desc\"},\n"))
+	b.WriteString(fmt.Sprintf("\t\tlist:     []interface{}{},\n"))
+	b.WriteString(fmt.Sprintf("\t\ttotal:    0,\n"))
+	b.WriteString(fmt.Sprintf("\t\tobjectListFormatter: newObjectListFormatter(),\n"))
 	b.WriteString(fmt.Sprintf("\t}\n"))
 	b.WriteString(fmt.Sprintf("}\n\n"))
 	return b
@@ -737,8 +757,8 @@ func (t *engine) createItemListFormaterFile(tab string, record []columnEntry) {
 	file_path := filepath.Join(t.libPath, tab, file_name)
 
 	str.WriteString(fmt.Sprintf("package %s\n\nimport (\n", tab))
-	str.WriteString(fmt.Sprintf("\t\"huabao/app/models\"\n"))
-	str.WriteString(fmt.Sprintf("\t\"huabao/utils\"\n"))
+	str.WriteString(fmt.Sprintf("\t\"%s/app/models\"\n", t.projectName))
+	str.WriteString(fmt.Sprintf("\t\"%s/utils\"\n", t.projectName))
 	str.WriteString(fmt.Sprintf("\t\"strings\"\n"))
 	str.WriteString(fmt.Sprintf("\t\"sync\"\n"))
 	str.WriteString(fmt.Sprintf(")\n\n"))
@@ -767,7 +787,7 @@ func (t *engine) createItemListobjectListFormatter(tab string, b *strings.Builde
 }
 
 func (t *engine) createItemListsetList(tab string, b *strings.Builder) *strings.Builder {
-	b.WriteString(fmt.Sprintf("func (u *objectListFormatter) setList(list []models.%s) {\n", t.camelCase(tab)))
+	b.WriteString(fmt.Sprintf("func (u *objectListFormatter) setList(list []models.%s) {\n", t.camelCase(tab)+"Entity"))
 	b.WriteString(fmt.Sprintf("\tvar end = len(list)\n"))
 	b.WriteString(fmt.Sprintf("\tvar tmp = make([]map[string]interface{}, end)\n\n"))
 	b.WriteString(fmt.Sprintf("\tu.result = tmp\n\n"))
@@ -819,8 +839,7 @@ func (t *engine) createItemHelperFile(tab string, record []columnEntry) {
 	str := strings.Builder{}
 	file_name := fmt.Sprintf("%s_%s.go", tab, "helper")
 	file_path := filepath.Join(t.libPath, tab, file_name)
-
-	str.WriteString(fmt.Sprintf("package %s\n\nimport (\n", tab))
+	str.WriteString(fmt.Sprintf("package %s\n\n", tab))
 	os.WriteFile(file_path, []byte(str.String()), 0666)
 }
 
@@ -831,7 +850,7 @@ func (t *engine) createItemBatchOperatorFile(tab string, record []columnEntry) {
 
 	str.WriteString(fmt.Sprintf("package %s\n\nimport (\n", tab))
 	str.WriteString(fmt.Sprintf("\t\"gorm.io/gorm\"\n"))
-	str.WriteString(fmt.Sprintf("\t\"huabao/app/models\"\n"))
+	str.WriteString(fmt.Sprintf("\t\"%s/app/models\"\n", t.projectName))
 	str.WriteString(fmt.Sprintf(")\n\n"))
 
 	str.WriteString(fmt.Sprintf("type BatchOperator struct {\n"))

@@ -19,6 +19,8 @@ var (
 	table               string
 	noNullField         bool
 	libPath             string
+	projectName         string
+	conn                string
 )
 
 func init() {
@@ -28,6 +30,8 @@ func init() {
 	flag.StringVar(&tagKey, "tag", "db", "tag key,eg:-tag=db")
 	flag.StringVar(&table, "t", "", "table,eg:-t=user;order")
 	flag.StringVar(&libPath, "lp", "./app/library", "library dir path,eg:-lp=./app/library")
+	flag.StringVar(&projectName, "pj", "project_name", "project name,eg:-lp=project_name")
+	flag.StringVar(&conn, "c", "default", "db connect,eg:-c=default")
 	flag.BoolVar(&isOutputCmd, "v", false, "whether output cmd,eg:-v=true")
 	flag.BoolVar(&ucFirstOnly, "u", false, "whether uc first only,eg:-u=false")
 	flag.BoolVar(&enableTableNameFunc, "m", false, "whether add TableName func eg:-m=true")
@@ -69,7 +73,7 @@ func main() {
 	}
 
 	var err error
-	enc := tbox.New(dsn, options...)
+	enc := tbox.New(dsn, projectName, conn, options...)
 	if table != "" {
 		tables := strings.Split(strings.TrimSuffix(table, ";"), ";")
 		err = enc.Run(tables...)
