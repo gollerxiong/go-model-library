@@ -30,7 +30,7 @@ func init() {
 	flag.StringVar(&tagKey, "tag", "db", "tag key,eg:-tag=db")
 	flag.StringVar(&table, "t", "", "table,eg:-t=user;order")
 	flag.StringVar(&libPath, "lp", "./app/library", "library dir path,eg:-lp=./app/library")
-	flag.StringVar(&projectName, "pj", "project_name", "project name,eg:-lp=project_name")
+	flag.StringVar(&projectName, "pj", "project_name", "project name,eg:-pj=project_name")
 	flag.StringVar(&conn, "c", "default", "db connect,eg:-c=default")
 	flag.BoolVar(&isOutputCmd, "v", false, "whether output cmd,eg:-v=true")
 	flag.BoolVar(&ucFirstOnly, "u", false, "whether uc first only,eg:-u=false")
