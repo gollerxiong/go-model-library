@@ -1,4 +1,4 @@
-module model_library
+module github.com/gollerxiong/mlib
 
 go 1.23.1
 
