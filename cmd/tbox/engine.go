@@ -430,6 +430,21 @@ func (t *engine) createItemSetOldAttributes(tab string, b *strings.Builder) *str
 	b.WriteString(fmt.Sprintf("\to.oldAttributes = m\n"))
 	b.WriteString(fmt.Sprintf("\treturn o\n"))
 	b.WriteString(fmt.Sprintf("}\n\n\n"))
+	t.createItemNew(tab, b)
+	return b
+}
+
+func (t *engine) createItemNew(tab string, b *strings.Builder) *strings.Builder {
+	b.WriteString(fmt.Sprintf("func New() *%s {\n", t.camelCase(tab)))
+	b.WriteString(fmt.Sprintf("\treturn &%s{\n", t.camelCase(tab)))
+	b.WriteString(fmt.Sprintf("\t\tisNew:      true,\n"))
+	b.WriteString(fmt.Sprintf("\t\tmodel:      &models.%s{},\n", t.camelCase(tab)+"Entity"))
+	b.WriteString(fmt.Sprintf("\t\tfield:      \"*\",\n"))
+	b.WriteString(fmt.Sprintf("\t\tformatter:  &ModelFormatter{},\n"))
+	b.WriteString(fmt.Sprintf("\t\tattributes: make(map[string]interface{}),\n"))
+	b.WriteString(fmt.Sprintf("\t}\n"))
+	b.WriteString(fmt.Sprintf("}\n\n\n"))
+
 	t.createItemGetAttributes(tab, b)
 	return b
 }
