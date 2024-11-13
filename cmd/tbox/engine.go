@@ -97,7 +97,7 @@ func (t *engine) getTableCode(tab string, record []columnEntry) []string {
 	tabName := tabPrefix + "Table"
 	structName := tabPrefix + "Entity"
 	tabInfoBuf.WriteString(fmt.Sprintf("// %s for %s\n", tabName, tab))
-	tabInfoBuf.WriteString(fmt.Sprintf("const %s = \"%s\"\n\n", tabName, tab))
+	//tabInfoBuf.WriteString(fmt.Sprintf("const %s = \"%s\"\n\n", tabName, tab))
 	tabInfoBuf.WriteString(fmt.Sprintf("// %s for %s table entity struct.\n", structName, tab))
 	tabInfoBuf.WriteString(fmt.Sprintf("type %s struct {\n", structName))
 
@@ -172,6 +172,10 @@ func (t *engine) getTableCode(tab string, record []columnEntry) []string {
 	tabInfoBuf.WriteString(fmt.Sprintf("\nfunc (o *%s) GetModel() (model *gorm.DB) {\n", structName))
 	tabInfoBuf.WriteString(fmt.Sprintf("\tmodel = global.App.DbMap[o.GetConn()]\n"))
 	tabInfoBuf.WriteString("\treturn\n")
+	tabInfoBuf.WriteString("}\n")
+
+	tabInfoBuf.WriteString(fmt.Sprintf("\nfunc New%sDbModel() *%s {\n", structName, structName))
+	tabInfoBuf.WriteString(fmt.Sprintf("\treturn &%s{\n", structName))
 	tabInfoBuf.WriteString("}\n")
 
 	return []string{
@@ -341,6 +345,7 @@ func (t *engine) createItemFile(tab string, record []columnEntry) {
 	str.WriteString(fmt.Sprintf("package %s\n\n", tab))
 	str.WriteString(fmt.Sprintf("import (\n"))
 	str.WriteString(fmt.Sprintf("\t\"gorm.io/gorm\"\n"))
+	str.WriteString(fmt.Sprintf("\t\"appbackend/global\"\n"))
 	str.WriteString(fmt.Sprintf("\t\"%s/app/models\"\n", t.projectName))
 	str.WriteString(fmt.Sprintf("\t\"%s/utils\"\n", t.projectName))
 	str.WriteString(fmt.Sprintf("\t\"strings\"\n"))
@@ -359,11 +364,14 @@ func (t *engine) createItemFile(tab string, record []columnEntry) {
 func (t *engine) createItemStruct(tab string, b *strings.Builder) *strings.Builder {
 	b.WriteString(fmt.Sprintf("type %s struct {\n", t.camelCase(tab)))
 	b.WriteString(fmt.Sprintf("\tisNew\tbool\n"))
+	b.WriteString(fmt.Sprintf("\tconn\t*gorm.DB\n"))
 	b.WriteString(fmt.Sprintf("\tmodel\t*models.%s\n", t.camelCase(tab)+"Entity"))
+	b.WriteString(fmt.Sprintf("\ttable\tstring\n"))
 	b.WriteString(fmt.Sprintf("\tfield\tstring\n"))
-	b.WriteString(fmt.Sprintf("\tformatter\t*ModelFormatter\n"))
+	b.WriteString(fmt.Sprintf("\tformatter\t*%sModelFormatter\n", t.camelCase(tab)))
 	b.WriteString(fmt.Sprintf("\tattributes\tmap[string]interface{}\n"))
 	b.WriteString(fmt.Sprintf("\toldAttributes\tmap[string]interface{}\n"))
+	b.WriteString(fmt.Sprintf("\thooks\t%sHooks\n", t.camelCase(tab)))
 	b.WriteString(fmt.Sprintf("}\n\n\n"))
 
 	t.createItemSetNew(tab, b)
@@ -391,6 +399,23 @@ func (t *engine) createItemIsNew(tab string, b *strings.Builder) *strings.Builde
 func (t *engine) createItemGetModel(tab string, b *strings.Builder) *strings.Builder {
 	b.WriteString(fmt.Sprintf("func (o *%s) GetModel() *models.%s {\n", t.camelCase(tab), t.camelCase(tab)+"Entity"))
 	b.WriteString(fmt.Sprintf("\treturn o.model\n"))
+	b.WriteString(fmt.Sprintf("}\n\n\n"))
+	t.createItemGetConn(tab, b)
+	return b
+}
+
+func (t *engine) createItemGetConn(tab string, b *strings.Builder) *strings.Builder {
+	b.WriteString(fmt.Sprintf("func (b *%s) GetConn() *gorm.DB {\n", t.camelCase(tab)))
+	b.WriteString(fmt.Sprintf("\tif b.conn == nil {\n"))
+	b.WriteString(fmt.Sprintf("\t\tdbmodel := b.model\n"))
+	b.WriteString(fmt.Sprintf("\t\tb.table = dbmodel.GetTable()\n"))
+	b.WriteString(fmt.Sprintf("\t\tconnstr := dbmodel.GetConn()\n\n"))
+	b.WriteString(fmt.Sprintf("\t\ttmp, ok := global.App.DbMap[connstr]\n\n"))
+	b.WriteString(fmt.Sprintf("\t\tif !ok {\n\t\t\tpanic(\"get conn error\")\n\t\t} else {\n"))
+	b.WriteString(fmt.Sprintf("\t\t\tb.conn = tmp\n"))
+	b.WriteString(fmt.Sprintf("\t\t}\n"))
+	b.WriteString(fmt.Sprintf("\t}\n"))
+	b.WriteString(fmt.Sprintf("\treturn b.conn\n"))
 	b.WriteString(fmt.Sprintf("}\n\n\n"))
 	t.createItemSetFields(tab, b)
 	return b
@@ -474,11 +499,29 @@ func (t *engine) createItemGetAttributes(tab string, b *strings.Builder) *string
 func (t *engine) createItemSave(tab string, b *strings.Builder) *strings.Builder {
 	b.WriteString(fmt.Sprintf("func (o *%s) Save() *%s {\n", t.camelCase(tab), t.camelCase(tab)))
 	b.WriteString(fmt.Sprintf("\tif o.IsNew() {\n"))
-	b.WriteString(fmt.Sprintf("\t\tconn.Save(o.model)\n"))
+	b.WriteString(fmt.Sprintf("\t\tdefer func() {\n"))
+	b.WriteString(fmt.Sprintf("\t\t\tif err := recover(); err != nil {\n"))
+	b.WriteString(fmt.Sprintf("\t\t\t\to.GetConn().Rollback()\n"))
+	b.WriteString(fmt.Sprintf("\t\t\t}\n"))
+	b.WriteString(fmt.Sprintf("\t\t}()\n"))
+	b.WriteString(fmt.Sprintf("\t\to.GetConn().Begin()\n"))
+	b.WriteString(fmt.Sprintf("\t\to.hooks.BeforeSave()\n"))
+	b.WriteString(fmt.Sprintf("\t\to.GetConn().Save(o.model)\n"))
+	b.WriteString(fmt.Sprintf("\t\to.hooks.AfterSave()\n"))
+	b.WriteString(fmt.Sprintf("\t\to.GetConn().Commit()\n"))
 	b.WriteString(fmt.Sprintf("\t} else {\n"))
 	b.WriteString(fmt.Sprintf("\t\tdiffMap := utils.DiffMapBaseFirst(o.oldAttributes, o.attributes)\n"))
 	b.WriteString(fmt.Sprintf("\t\tkeys := utils.MapKeys(diffMap)\n"))
-	b.WriteString(fmt.Sprintf("\t\tconn.Model(&models.%s{}).Where(\"id = ?\", o.model.ID).Select(keys).Updates(diffMap)\n", t.camelCase(tab)+"Entity"))
+	b.WriteString(fmt.Sprintf("\t\tdefer func() {\n"))
+	b.WriteString(fmt.Sprintf("\t\t\tif err := recover(); err != nil {\n"))
+	b.WriteString(fmt.Sprintf("\t\t\t\to.GetConn().Rollback()\n"))
+	b.WriteString(fmt.Sprintf("\t\t\t}\n"))
+	b.WriteString(fmt.Sprintf("\t\t}()\n"))
+	b.WriteString(fmt.Sprintf("\t\to.GetConn().Begin()\n"))
+	b.WriteString(fmt.Sprintf("\t\to.hooks.BeforeSave()\n"))
+	b.WriteString(fmt.Sprintf("\t\to.GetConn().Model(&models.%s{}).Where(\"id = ?\", o.model.ID).Select(keys).Updates(diffMap)\n", t.camelCase(tab)+"Entity"))
+	b.WriteString(fmt.Sprintf("\t\to.hooks.AfterSave()\n"))
+	b.WriteString(fmt.Sprintf("\t\to.GetConn().Commit()\n"))
 	b.WriteString(fmt.Sprintf("\t}\n"))
 	b.WriteString(fmt.Sprintf("\to.SetNew(false)\n"))
 	b.WriteString(fmt.Sprintf("\treturn o\n"))
@@ -493,7 +536,7 @@ func (t *engine) createItemDelete(tab string, b *strings.Builder) *strings.Build
 	b.WriteString(fmt.Sprintf("\tif o.IsNew() || o.model.ID < 1 {\n"))
 	b.WriteString(fmt.Sprintf("\t\treturn true\n"))
 	b.WriteString(fmt.Sprintf("\t} else {\n"))
-	b.WriteString(fmt.Sprintf("\t\tres := conn.Delete(o.model).Error\n"))
+	b.WriteString(fmt.Sprintf("\t\tres := o.GetConn().Delete(o.model).Error\n"))
 	b.WriteString(fmt.Sprintf("\t\tif res != nil {\n"))
 	b.WriteString(fmt.Sprintf("\t\t\treturn false\n"))
 	b.WriteString(fmt.Sprintf("\t\t}\n"))
@@ -506,7 +549,7 @@ func (t *engine) createItemDelete(tab string, b *strings.Builder) *strings.Build
 
 func (t *engine) createItemLoadById(tab string, b *strings.Builder) *strings.Builder {
 	b.WriteString(fmt.Sprintf("func (o *%s) LoadById(id int) *%s {\n", t.camelCase(tab), t.camelCase(tab)))
-	b.WriteString(fmt.Sprintf("\tconnection := GetConn().Model(o.model)\n"))
+	b.WriteString(fmt.Sprintf("\tconnection := o.GetConn().Model(o.model)\n"))
 	b.WriteString(fmt.Sprintf("\terr := connection.Where(\"id=?\", id).First(o.model).Error\n"))
 	b.WriteString(fmt.Sprintf("\tif err == gorm.ErrRecordNotFound {\n"))
 	b.WriteString(fmt.Sprintf("\t\to.SetNew(true)\n"))
@@ -588,20 +631,46 @@ func (t *engine) createItemFormaterFile(tab string, record []columnEntry) {
 	file_path := filepath.Join(t.libPath, tab, file_name)
 
 	str.WriteString(fmt.Sprintf("package %s\n\n", tab))
-	str.WriteString(fmt.Sprintf("type ModelFormatter struct {\n"))
+	str.WriteString(fmt.Sprintf("import (\n"))
+	str.WriteString(fmt.Sprintf("\t\"appbackend/app/library/global\"\n"))
+	str.WriteString(fmt.Sprintf("\t\"appbackend/utils\"\n"))
+	str.WriteString(fmt.Sprintf("\t\"strings\"\n"))
+	str.WriteString(fmt.Sprintf(")\n\n"))
+	str.WriteString(fmt.Sprintf("type %sFormatter struct {\n", t.camelCase(tab)))
 	str.WriteString(fmt.Sprintf("\t data map[string]interface{}\n"))
+	str.WriteString(fmt.Sprintf("\t columnFuncMap map[string]func(interface{}) interface{}\n"))
 	str.WriteString(fmt.Sprintf("}\n\n"))
-	str.WriteString(fmt.Sprintf("func (u *ModelFormatter) SetData(data map[string]interface{}) {\n"))
+
+	str.WriteString(fmt.Sprintf("func (u *%sFormatter) SetData(data map[string]interface{}) {\n", t.camelCase(tab)))
 	str.WriteString(fmt.Sprintf("\tu.data = data\n"))
-	str.WriteString(fmt.Sprintf("}\n"))
-	str.WriteString(fmt.Sprintf("func (u *ModelFormatter) Formate() map[string]interface{} {\n"))
+	str.WriteString(fmt.Sprintf("}\n\n"))
+
+	str.WriteString(fmt.Sprintf("func (u *%sFormatter) Formate() map[string]interface{} {\n", t.camelCase(tab)))
 	str.WriteString(fmt.Sprintf("\tvar result = make(map[string]interface{})\n"))
 	str.WriteString(fmt.Sprintf("\tfor key, val := range u.data {\n"))
-	str.WriteString(fmt.Sprintf("\t\ttmp := columnFormate(key, val)\n"))
+	str.WriteString(fmt.Sprintf("\t\ttmp := u.columnFormate(key, val)\n"))
 	str.WriteString(fmt.Sprintf("\t\tresult[key] = tmp\n"))
 	str.WriteString(fmt.Sprintf("\t}\n\n"))
 	str.WriteString(fmt.Sprintf("\tu.data = result\n"))
 	str.WriteString(fmt.Sprintf("\treturn u.data\n"))
+	str.WriteString(fmt.Sprintf("}\n\n\n"))
+
+	str.WriteString(fmt.Sprintf("func (u *%sFormatter) columnFormate(key string, value interface{}) interface{} {\n", t.camelCase(tab)))
+	str.WriteString(fmt.Sprintf("\tkey = strings.ToLower(key)\n"))
+	str.WriteString(fmt.Sprintf("\tcallback, ok := u.columnFuncMap[key]\n\n"))
+	str.WriteString(fmt.Sprintf("\tif ok {\n"))
+	str.WriteString(fmt.Sprintf("\t\treturn callback(value)\n"))
+	str.WriteString(fmt.Sprintf("\t} else {\n"))
+	str.WriteString(fmt.Sprintf("\t\treturn value\n"))
+	str.WriteString(fmt.Sprintf("\t}\n"))
+	str.WriteString(fmt.Sprintf("}\n\n\n"))
+
+	str.WriteString(fmt.Sprintf("func New%sFormatter() *%sFormatter {\n", t.camelCase(tab), t.camelCase(tab)))
+	str.WriteString(fmt.Sprintf("\tres := &%sFormatter{\n", t.camelCase(tab)))
+	str.WriteString(fmt.Sprintf("\t\tcolumnFuncMap: make(map[string]func(interface{}) interface{}),\n"))
+	str.WriteString(fmt.Sprintf("\t}\n\n"))
+	str.WriteString(fmt.Sprintf("\t// 注册列格式化函数\n\n"))
+	str.WriteString(fmt.Sprintf("\treturn res\n"))
 	str.WriteString(fmt.Sprintf("}\n\n\n"))
 	os.WriteFile(file_path, []byte(str.String()), 0666)
 }
@@ -616,9 +685,11 @@ func (t *engine) createItemListFile(tab string, record []columnEntry) {
 	str.WriteString(fmt.Sprintf("\t\"%s/app/models\"\n", t.projectName))
 	str.WriteString(fmt.Sprintf("\t\"strings\"\n"))
 	str.WriteString(fmt.Sprintf(")\n\n"))
-	str.WriteString(fmt.Sprintf("type ObjectList struct {\n"))
+	str.WriteString(fmt.Sprintf("type %sList struct {\n", t.camelCase(tab)))
 	str.WriteString(fmt.Sprintf("\tfield\tstring\n"))
-	str.WriteString(fmt.Sprintf("\tmodel\t*gorm.DB\n"))
+	str.WriteString(fmt.Sprintf("\tconn                  *gorm.DB\n"))
+	str.WriteString(fmt.Sprintf("\tmodel\t*models.%s\n", t.camelCase(tab)))
+	str.WriteString(fmt.Sprintf("\ttable\tstring\n"))
 	str.WriteString(fmt.Sprintf("\tpage\tint\n"))
 	str.WriteString(fmt.Sprintf("\tpageNate\tbool\n"))
 	str.WriteString(fmt.Sprintf("\tpageSize\tint\n"))
@@ -626,14 +697,30 @@ func (t *engine) createItemListFile(tab string, record []columnEntry) {
 	str.WriteString(fmt.Sprintf("\tids\t[]int\n"))
 	str.WriteString(fmt.Sprintf("\tlist\t[]interface{}\n"))
 	str.WriteString(fmt.Sprintf("\ttotal\tint64\n"))
-	str.WriteString(fmt.Sprintf("\tobjectListFormatter\t*objectListFormatter\n"))
+	str.WriteString(fmt.Sprintf("\t%sListFormatter\t*%sListFormatter\n", t.camelCase(tab), t.camelCase(tab)))
 	str.WriteString(fmt.Sprintf("}\n\n"))
+	t.createItemListGetConn(tab+"List", &str)
 	t.createItemListSetFieldStr(tab, &str)
 	os.WriteFile(file_path, []byte(str.String()), 0666)
 }
 
+func (t *engine) createItemListGetConn(tab string, b *strings.Builder) {
+	b.WriteString(fmt.Sprintf("func (b *%s) GetConn() *gorm.DB {\n", t.camelCase(tab)))
+	b.WriteString(fmt.Sprintf("\tif b.conn == nil {\n"))
+	b.WriteString(fmt.Sprintf("\t\tdbmodel := b.model\n"))
+	b.WriteString(fmt.Sprintf("\t\tb.table = dbmodel.GetTable()\n"))
+	b.WriteString(fmt.Sprintf("\t\tconnstr := dbmodel.GetConn()\n\n"))
+	b.WriteString(fmt.Sprintf("\t\ttmp, ok := global.App.DbMap[connstr]\n\n"))
+	b.WriteString(fmt.Sprintf("\t\tif !ok {\n\t\t\tpanic(\"get conn error\")\n\t\t} else {\n"))
+	b.WriteString(fmt.Sprintf("\t\t\tb.conn = tmp\n"))
+	b.WriteString(fmt.Sprintf("\t\t}\n"))
+	b.WriteString(fmt.Sprintf("\t}\n"))
+	b.WriteString(fmt.Sprintf("\treturn b.conn\n"))
+	b.WriteString(fmt.Sprintf("}\n\n\n"))
+}
+
 func (t *engine) createItemListSetFieldStr(tab string, b *strings.Builder) *strings.Builder {
-	b.WriteString(fmt.Sprintf("func (u *ObjectList) SetField(f string) *ObjectList {\n"))
+	b.WriteString(fmt.Sprintf("func (u *%sList) SetField(f string) *%sList {\n", t.camelCase(tab), t.camelCase(tab)))
 	b.WriteString(fmt.Sprintf("\tu.field = f\n"))
 	b.WriteString(fmt.Sprintf("\treturn u\n"))
 	b.WriteString(fmt.Sprintf("}\n\n"))
@@ -642,7 +729,7 @@ func (t *engine) createItemListSetFieldStr(tab string, b *strings.Builder) *stri
 }
 
 func (t *engine) createItemListSetPage(tab string, b *strings.Builder) *strings.Builder {
-	b.WriteString(fmt.Sprintf("func (u *ObjectList) SetPage(page int) *ObjectList {\n"))
+	b.WriteString(fmt.Sprintf("func (u *%sList) SetPage(page int) *%sList {\n", t.camelCase(tab), t.camelCase(tab)))
 	b.WriteString(fmt.Sprintf("\tu.page = page\n"))
 	b.WriteString(fmt.Sprintf("\treturn u\n"))
 	b.WriteString(fmt.Sprintf("}\n\n"))
@@ -651,7 +738,7 @@ func (t *engine) createItemListSetPage(tab string, b *strings.Builder) *strings.
 }
 
 func (t *engine) createItemListSetPagenate(tab string, b *strings.Builder) *strings.Builder {
-	b.WriteString(fmt.Sprintf("func (u *ObjectList) SetPagenate(p bool) *ObjectList {\n"))
+	b.WriteString(fmt.Sprintf("func (u *%sList) SetPagenate(p bool) *%sList {\n", t.camelCase(tab), t.camelCase(tab)))
 	b.WriteString(fmt.Sprintf("\tu.pageNate = p\n"))
 	b.WriteString(fmt.Sprintf("\treturn u\n"))
 	b.WriteString(fmt.Sprintf("}\n\n"))
@@ -660,7 +747,7 @@ func (t *engine) createItemListSetPagenate(tab string, b *strings.Builder) *stri
 }
 
 func (t *engine) createItemListSetPageSize(tab string, b *strings.Builder) *strings.Builder {
-	b.WriteString(fmt.Sprintf("func (u *ObjectList) SetPageSize(page_size int) *ObjectList {\n"))
+	b.WriteString(fmt.Sprintf("func (u *%sList) SetPageSize(page_size int) *%sList {\n", t.camelCase(tab), t.camelCase(tab)))
 	b.WriteString(fmt.Sprintf("\tu.pageSize = page_size\n"))
 	b.WriteString(fmt.Sprintf("\treturn u\n"))
 	b.WriteString(fmt.Sprintf("}\n\n"))
@@ -669,7 +756,7 @@ func (t *engine) createItemListSetPageSize(tab string, b *strings.Builder) *stri
 }
 
 func (t *engine) createItemListSetOrder(tab string, b *strings.Builder) *strings.Builder {
-	b.WriteString(fmt.Sprintf("func (u *ObjectList) SetOrder(order string) *ObjectList {\n"))
+	b.WriteString(fmt.Sprintf("func (u *%sList) SetOrder(order string) *%sList {\n", t.camelCase(tab), t.camelCase(tab)))
 	b.WriteString(fmt.Sprintf("\tu.order = append(u.order, order)\n"))
 	b.WriteString(fmt.Sprintf("\treturn u\n"))
 	b.WriteString(fmt.Sprintf("}\n\n"))
@@ -678,7 +765,7 @@ func (t *engine) createItemListSetOrder(tab string, b *strings.Builder) *strings
 }
 
 func (t *engine) createItemListSetIds(tab string, b *strings.Builder) *strings.Builder {
-	b.WriteString(fmt.Sprintf("func (u *ObjectList) SetIds(ids []int) *ObjectList {\n"))
+	b.WriteString(fmt.Sprintf("func (u *%sList) SetIds(ids []int) *%sList {\n", t.camelCase(tab), t.camelCase(tab)))
 	b.WriteString(fmt.Sprintf("\tu.ids = ids\n"))
 	b.WriteString(fmt.Sprintf("\treturn u\n"))
 	b.WriteString(fmt.Sprintf("}\n\n"))
@@ -687,15 +774,15 @@ func (t *engine) createItemListSetIds(tab string, b *strings.Builder) *strings.B
 }
 
 func (t *engine) createItemListgetFormatter(tab string, b *strings.Builder) *strings.Builder {
-	b.WriteString(fmt.Sprintf("func (u *ObjectList) getFormatter() *objectListFormatter {\n"))
-	b.WriteString(fmt.Sprintf("\treturn u.objectListFormatter\n"))
+	b.WriteString(fmt.Sprintf("func (u *%sList) getFormatter() *%sListFormatter {\n", t.camelCase(tab), t.camelCase(tab)))
+	b.WriteString(fmt.Sprintf("\treturn u.%sListFormatter\n", t.camelCase(tab)))
 	b.WriteString(fmt.Sprintf("}\n\n"))
 	t.createItemListaddField(tab, b)
 	return b
 }
 
 func (t *engine) createItemListaddField(tab string, b *strings.Builder) *strings.Builder {
-	b.WriteString(fmt.Sprintf("func (u *ObjectList) addField(f string) {\n"))
+	b.WriteString(fmt.Sprintf("func (u *%sList) addField(f string) {\n", t.camelCase(tab)))
 	b.WriteString(fmt.Sprintf("\tif !strings.Contains(u.field, \"*\") {\n"))
 	b.WriteString(fmt.Sprintf("\t\tu.field += \",\" + f\n"))
 	b.WriteString(fmt.Sprintf("\t}\n"))
@@ -705,14 +792,14 @@ func (t *engine) createItemListaddField(tab string, b *strings.Builder) *strings
 }
 
 func (t *engine) createItemListbuildParams(tab string, b *strings.Builder) *strings.Builder {
-	b.WriteString(fmt.Sprintf("func (u *ObjectList) buildParams() {\n"))
+	b.WriteString(fmt.Sprintf("func (u *%sList) buildParams() {\n", t.camelCase(tab)))
 	b.WriteString(fmt.Sprintf("\tif len(u.ids) > 0 {\n"))
-	b.WriteString(fmt.Sprintf("\t\tu.model = u.model.Where(\"id in?\", u.ids)\n"))
+	b.WriteString(fmt.Sprintf("\t\tu.conn = u.GetConn().Where(\"id in?\", u.ids)\n"))
 	b.WriteString(fmt.Sprintf("\t}\n\n"))
-	b.WriteString(fmt.Sprintf("\tu.model = u.model.Offset((u.page - 1) * u.pageSize).Limit(u.pageSize)\n\n"))
+	b.WriteString(fmt.Sprintf("\tu.conn = u.GetConn().Offset((u.page - 1) * u.pageSize).Limit(u.pageSize)\n\n"))
 	b.WriteString(fmt.Sprintf("\tif len(u.order) > 0 {\n"))
 	b.WriteString(fmt.Sprintf("\t\tfor _, val := range u.order {\n"))
-	b.WriteString(fmt.Sprintf("\t\t\tu.model = u.model.Order(val)\n"))
+	b.WriteString(fmt.Sprintf("\t\t\tu.conn = u.GetConn().Order(val)\n"))
 	b.WriteString(fmt.Sprintf("\t\t}\n"))
 	b.WriteString(fmt.Sprintf("\t}\n"))
 	b.WriteString(fmt.Sprintf("}\n\n"))
@@ -721,10 +808,10 @@ func (t *engine) createItemListbuildParams(tab string, b *strings.Builder) *stri
 }
 
 func (t *engine) createItemListFind(tab string, b *strings.Builder) *strings.Builder {
-	b.WriteString(fmt.Sprintf("func (u *ObjectList) Find() (userInfoList []map[string]interface{}, total int64) {\n"))
+	b.WriteString(fmt.Sprintf("func (u *%sList) Find() (userInfoList []map[string]interface{}, total int64) {\n", t.camelCase(tab)))
 	b.WriteString(fmt.Sprintf("\tu.buildParams()\n\n"))
 	b.WriteString(fmt.Sprintf("\tlist := []models.%s{}\n", t.camelCase(tab)+"Entity"))
-	b.WriteString(fmt.Sprintf("\tresult := u.model.Find(&list)\n"))
+	b.WriteString(fmt.Sprintf("\tresult := u.GetConn().Find(&list)\n"))
 	b.WriteString(fmt.Sprintf("\tformatter := u.getFormatter()\n"))
 	b.WriteString(fmt.Sprintf("\tformatter.setList(list)\n"))
 	b.WriteString(fmt.Sprintf("\tformatter.setFields(u.field)\n"))
@@ -738,7 +825,7 @@ func (t *engine) createItemListFind(tab string, b *strings.Builder) *strings.Bui
 }
 
 func (t *engine) createItemListfilter(tab string, b *strings.Builder) *strings.Builder {
-	b.WriteString(fmt.Sprintf("func (u *ObjectList) filter(list []models.%s) (result []map[string]interface{}) {\n", t.camelCase(tab)+"Entity"))
+	b.WriteString(fmt.Sprintf("func (u *%sList) filter(list []models.%s) (result []map[string]interface{}) {\n", t.camelCase(tab), t.camelCase(tab)+"Entity"))
 	b.WriteString(fmt.Sprintf("\tfor _, v := range list {\n"))
 	b.WriteString(fmt.Sprintf("\t\ttmp, _ := utils.StructToMap(v)\n"))
 	b.WriteString(fmt.Sprintf("\t\ttmp = utils.PickFieldsFromMap(tmp, u.field)\n"))
@@ -751,17 +838,16 @@ func (t *engine) createItemListfilter(tab string, b *strings.Builder) *strings.B
 }
 
 func (t *engine) createItemListObjectList(tab string, b *strings.Builder) *strings.Builder {
-	b.WriteString(fmt.Sprintf("func NewObjectList() *ObjectList {\n"))
-	b.WriteString(fmt.Sprintf("\treturn &ObjectList{\n"))
+	b.WriteString(fmt.Sprintf("func New%sList() *%sList {\n", t.camelCase(tab), t.camelCase(tab)))
+	b.WriteString(fmt.Sprintf("\treturn &%sList{\n", t.camelCase(tab)))
 	b.WriteString(fmt.Sprintf("\t\tfield:\t\"*\",\n"))
 	b.WriteString(fmt.Sprintf("\t\tpage:\t1,\n"))
 	b.WriteString(fmt.Sprintf("\t\tpageNate:\ttrue,\n"))
 	b.WriteString(fmt.Sprintf("\t\tpageSize:\t20,\n"))
-	b.WriteString(fmt.Sprintf("\t\tmodel:\tGetConn().Table(table),\n"))
 	b.WriteString(fmt.Sprintf("\t\torder:\t[]string{\"id desc\"},\n"))
 	b.WriteString(fmt.Sprintf("\t\tlist:     []interface{}{},\n"))
 	b.WriteString(fmt.Sprintf("\t\ttotal:    0,\n"))
-	b.WriteString(fmt.Sprintf("\t\tobjectListFormatter: newObjectListFormatter(),\n"))
+	b.WriteString(fmt.Sprintf("\t\t%sListFormatter: new%sListFormatter(),\n", t.camelCase(tab), t.camelCase(tab)))
 	b.WriteString(fmt.Sprintf("\t}\n"))
 	b.WriteString(fmt.Sprintf("}\n\n"))
 	return b
@@ -783,8 +869,8 @@ func (t *engine) createItemListFormaterFile(tab string, record []columnEntry) {
 }
 
 func (t *engine) createItemListnewObjectListFormatterStr(tab string, b *strings.Builder) *strings.Builder {
-	b.WriteString(fmt.Sprintf("func newObjectListFormatter() (of *objectListFormatter) {\n"))
-	b.WriteString(fmt.Sprintf("\tof = &objectListFormatter{}\n"))
+	b.WriteString(fmt.Sprintf("func new%sListFormatter() (of *%sListFormatter) {\n", t.camelCase(tab), t.camelCase(tab)))
+	b.WriteString(fmt.Sprintf("\tof = &%sListFormatter{}\n", t.camelCase(tab)))
 	b.WriteString(fmt.Sprintf("\treturn\n"))
 	b.WriteString(fmt.Sprintf("}\n\n"))
 	t.createItemListobjectListFormatter(tab, b)
@@ -792,7 +878,7 @@ func (t *engine) createItemListnewObjectListFormatterStr(tab string, b *strings.
 }
 
 func (t *engine) createItemListobjectListFormatter(tab string, b *strings.Builder) *strings.Builder {
-	b.WriteString(fmt.Sprintf("type objectListFormatter struct {\n"))
+	b.WriteString(fmt.Sprintf("type %sListFormatter struct {\n", t.camelCase(tab)))
 	b.WriteString(fmt.Sprintf("\tlist\t[]map[string]interface{}\n"))
 	b.WriteString(fmt.Sprintf("\tfields\tstring\n"))
 	b.WriteString(fmt.Sprintf("\twg\tsync.WaitGroup\n"))
@@ -803,7 +889,7 @@ func (t *engine) createItemListobjectListFormatter(tab string, b *strings.Builde
 }
 
 func (t *engine) createItemListsetList(tab string, b *strings.Builder) *strings.Builder {
-	b.WriteString(fmt.Sprintf("func (u *objectListFormatter) setList(list []models.%s) {\n", t.camelCase(tab)+"Entity"))
+	b.WriteString(fmt.Sprintf("func (u *%sListFormatter) setList(list []models.%s) {\n", t.camelCase(tab), t.camelCase(tab)+"Entity"))
 	b.WriteString(fmt.Sprintf("\tvar end = len(list)\n"))
 	b.WriteString(fmt.Sprintf("\tvar tmp = make([]map[string]interface{}, end)\n\n"))
 	b.WriteString(fmt.Sprintf("\tu.result = tmp\n\n"))
@@ -818,11 +904,11 @@ func (t *engine) createItemListsetList(tab string, b *strings.Builder) *strings.
 }
 
 func (t *engine) createItemListsetFields(tab string, b *strings.Builder) *strings.Builder {
-	b.WriteString(fmt.Sprintf("func (u *objectListFormatter) setFields(f string) {\n"))
+	b.WriteString(fmt.Sprintf("func (u *%sListFormatter) setFields(f string) {\n", t.camelCase(tab)))
 	b.WriteString(fmt.Sprintf("\tu.fields = f\n"))
 	b.WriteString(fmt.Sprintf("}\n\n"))
 
-	b.WriteString(fmt.Sprintf("func (u *objectListFormatter) formate() []map[string]interface{} {\n"))
+	b.WriteString(fmt.Sprintf("func (u *%sListFormatter) formate() []map[string]interface{} {\n", t.camelCase(tab)))
 	b.WriteString(fmt.Sprintf("\tvar length = len(u.list)\n\n"))
 	b.WriteString(fmt.Sprintf("\tu.wg.Add(length)\n"))
 	b.WriteString(fmt.Sprintf("\tfor i := 0; i < length; i++ {\n"))
@@ -832,15 +918,16 @@ func (t *engine) createItemListsetFields(tab string, b *strings.Builder) *string
 	b.WriteString(fmt.Sprintf("\treturn u.result\n"))
 	b.WriteString(fmt.Sprintf("}\n\n"))
 
-	b.WriteString(fmt.Sprintf("func (u *objectListFormatter) do(index int, item map[string]interface{}) {\n"))
+	b.WriteString(fmt.Sprintf("func (u *%sListFormatter) do(index int, item map[string]interface{}) {\n", t.camelCase(tab)))
 	b.WriteString(fmt.Sprintf("\tdefer u.wg.Done()\n"))
 	b.WriteString(fmt.Sprintf("\tresult := make(map[string]interface{})\n\n"))
 	b.WriteString(fmt.Sprintf("\tif !strings.Contains(u.fields, \"*\") {\n"))
 	b.WriteString(fmt.Sprintf("\t\tfieldArr := strings.Split(u.fields, \",\")\n"))
+	b.WriteString(fmt.Sprintf("\t\tformatter := New%sFormatter()\n", t.camelCase(tab)))
 	b.WriteString(fmt.Sprintf("\t\tfor _, key := range fieldArr {\n"))
 	b.WriteString(fmt.Sprintf("\t\t\tval, ok := item[key]\n"))
 	b.WriteString(fmt.Sprintf("\t\t\tif ok {\n"))
-	b.WriteString(fmt.Sprintf("\t\t\t\tresult[key] = columnFormate(key, val)\n"))
+	b.WriteString(fmt.Sprintf("\t\t\t\tresult[key] = formatter.columnFormate(key, val)\n"))
 	b.WriteString(fmt.Sprintf("\t\t\t}\n"))
 	b.WriteString(fmt.Sprintf("\t\t}\n"))
 	b.WriteString(fmt.Sprintf("\t\tu.result[index] = result\n"))
@@ -865,43 +952,59 @@ func (t *engine) createItemBatchOperatorFile(tab string, record []columnEntry) {
 	file_path := filepath.Join(t.libPath, tab, file_name)
 
 	str.WriteString(fmt.Sprintf("package %s\n\nimport (\n", tab))
+	str.WriteString(fmt.Sprintf("\t\"appbackend/app/models\"\n"))
 	str.WriteString(fmt.Sprintf("\t\"gorm.io/gorm\"\n"))
 	str.WriteString(fmt.Sprintf("\t\"%s/app/models\"\n", t.projectName))
 	str.WriteString(fmt.Sprintf(")\n\n"))
 
-	str.WriteString(fmt.Sprintf("type BatchOperator struct {\n"))
+	str.WriteString(fmt.Sprintf("type %sBatchOperator struct {\n", t.camelCase(tab)))
 	str.WriteString(fmt.Sprintf("\tfield      string\n"))
 	str.WriteString(fmt.Sprintf("\tfieldValue interface{}\n"))
-	str.WriteString(fmt.Sprintf("\tmodel      *gorm.DB\n"))
+	str.WriteString(fmt.Sprintf("\tmodel      *models.%s\n", t.camelCase(tab)+"Entity"))
+	str.WriteString(fmt.Sprintf("\tconn      *gorm.DB\n"))
+	str.WriteString(fmt.Sprintf("\ttable      string\n"))
 	str.WriteString(fmt.Sprintf("\tids        []int\n"))
 	str.WriteString(fmt.Sprintf("}\n\n"))
 
-	str.WriteString(fmt.Sprintf("func NewBatchOperator() *BatchOperator {\n"))
-	str.WriteString(fmt.Sprintf("\treturn &BatchOperator{\n"))
-	str.WriteString(fmt.Sprintf("\t\tmodel: GetConn(),\n"))
+	str.WriteString(fmt.Sprintf("func New%sBatchOperator() *BatchOperator {\n", t.camelCase(tab)))
+	str.WriteString(fmt.Sprintf("\treturn &%sBatchOperator{\n", t.camelCase(tab)))
+	str.WriteString(fmt.Sprintf("\t\tmodel: &models.%s,\n", t.camelCase(tab)+"Entity{}"))
 	str.WriteString(fmt.Sprintf("\t}\n"))
 	str.WriteString(fmt.Sprintf("}\n\n"))
 
-	str.WriteString(fmt.Sprintf("func (b *BatchOperator) SetFieldValue(v interface{}) *BatchOperator {"))
+	str.WriteString(fmt.Sprintf("func (b *%sBatchOperator) GetConn() *gorm.DB {\n", t.camelCase(tab)))
+	str.WriteString(fmt.Sprintf("\tif b.conn == nil {\n"))
+	str.WriteString(fmt.Sprintf("\t\tdbmodel := b.model\n"))
+	str.WriteString(fmt.Sprintf("\t\tb.table = dbmodel.GetTable()\n"))
+	str.WriteString(fmt.Sprintf("\t\tconnstr := dbmodel.GetConn()\n\n"))
+	str.WriteString(fmt.Sprintf("\t\ttmp, ok := global.App.DbMap[connstr]\n\n"))
+	str.WriteString(fmt.Sprintf("\t\tif !ok {\n\t\t\tpanic(\"get conn error\")\n\t\t} else {\n"))
+	str.WriteString(fmt.Sprintf("\t\tb.conn = tmp\n"))
+	str.WriteString(fmt.Sprintf("\t\t}\n"))
+	str.WriteString(fmt.Sprintf("\t}\n"))
+	str.WriteString(fmt.Sprintf("\t\treturn b.conn\n"))
+	str.WriteString(fmt.Sprintf("}\n\n"))
+
+	str.WriteString(fmt.Sprintf("func (b *%sBatchOperator) SetFieldValue(v interface{}) *%sBatchOperator {", t.camelCase(tab), t.camelCase(tab)))
 	str.WriteString(fmt.Sprintf("\tb.fieldValue = v\n"))
 	str.WriteString(fmt.Sprintf("\treturn b\n"))
 	str.WriteString(fmt.Sprintf("}\n\n"))
 
-	str.WriteString(fmt.Sprintf("func (b *BatchOperator) buildParams() {\n"))
+	str.WriteString(fmt.Sprintf("func (b *%sBatchOperator) buildParams() {\n", t.camelCase(tab)))
 	str.WriteString(fmt.Sprintf("\tif len(b.ids) > 0 {\n"))
-	str.WriteString(fmt.Sprintf("\t\tb.model = b.model.Where(\"id in ?\", b.ids)\n"))
+	str.WriteString(fmt.Sprintf("\t\tb.conn = b.GetConn().Where(\"id in ?\", b.ids)\n"))
 	str.WriteString(fmt.Sprintf("\t}\n"))
 	str.WriteString(fmt.Sprintf("}\n\n"))
 
-	str.WriteString(fmt.Sprintf("func (b *BatchOperator) Update() bool {\n"))
+	str.WriteString(fmt.Sprintf("func (b *%sBatchOperator) Update() bool {\n", t.camelCase(tab)))
 	str.WriteString(fmt.Sprintf("\tb.buildParams()\n"))
-	str.WriteString(fmt.Sprintf("\tb.model.Model(&models.UserBan{}).Update(b.field, b.fieldValue)\n"))
+	str.WriteString(fmt.Sprintf("\tb.GetConn().Model(&models.%sEntity{}).Update(b.field, b.fieldValue)\n", t.camelCase(tab)))
 	str.WriteString(fmt.Sprintf("\treturn true\n"))
 	str.WriteString(fmt.Sprintf("}\n\n"))
 
-	str.WriteString(fmt.Sprintf("func (b *BatchOperator) Delete() bool {\n"))
+	str.WriteString(fmt.Sprintf("func (b *%sBatchOperator) Delete() bool {\n", t.camelCase(tab)))
 	str.WriteString(fmt.Sprintf("\tb.buildParams()\n"))
-	str.WriteString(fmt.Sprintf("\tb.model.Delete(&models.UserBan{})\n"))
+	str.WriteString(fmt.Sprintf("\tb.GetConn().Delete(&models.%sEntity{})\n", t.camelCase(tab)))
 	str.WriteString(fmt.Sprintf("\treturn true\n"))
 	str.WriteString(fmt.Sprintf("}\n\n"))
 
@@ -909,13 +1012,13 @@ func (t *engine) createItemBatchOperatorFile(tab string, record []columnEntry) {
 }
 
 func (t *engine) createLibrary(tab string, record []columnEntry) {
-	t.createItemFile(tab, record)
-	t.createCommonFile(tab, record)
-	t.createItemFormaterFile(tab, record)
-	t.createItemListFile(tab, record)
-	t.createItemListFormaterFile(tab, record)
-	t.createItemHelperFile(tab, record)
-	t.createItemBatchOperatorFile(tab, record)
+	//t.createItemFile(tab, record)
+	//t.createCommonFile(tab, record)
+	//t.createItemFormaterFile(tab, record)
+	//t.createItemListFile(tab, record)
+	//t.createItemListFormaterFile(tab, record)
+	//t.createItemHelperFile(tab, record)
+	//t.createItemBatchOperatorFile(tab, record)
 	t.createItemConstFile(tab, record)
 }
 
